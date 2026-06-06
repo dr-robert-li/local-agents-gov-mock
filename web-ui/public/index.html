@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Stock Research Agent · POC</title>
+  <link rel="stylesheet" href="/style.css" />
+  <!-- Chart.js for the equity sparkline (CDN, no build step). -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>📈 Claude Agent SDK · Stock Research POC</h1>
+    <div class="actions">
+      <span id="run-status" class="pill">idle</span>
+      <button id="run-btn">▶ Trigger run</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- LEFT: live agent stream -->
+    <section id="stream-panel">
+      <h2>Live agent stream</h2>
+      <div id="stream"></div>
+    </section>
+
+    <!-- RIGHT: portfolio dashboard -->
+    <section id="portfolio-panel">
+      <h2>Portfolio</h2>
+      <div class="stats">
+        <div class="stat"><label>Cash</label><span id="cash">—</span></div>
+        <div class="stat"><label>Total equity</label><span id="equity">—</span></div>
+        <div class="stat"><label>Last run</label><span id="last-run">—</span></div>
+        <div class="stat"><label>Total tokens</label><span id="tokens">—</span></div>
+        <div class="stat"><label>Total cost</label><span id="cost">—</span></div>
+      </div>
+
+      <canvas id="equity-chart" height="70"></canvas>
+
+      <h3>Open positions</h3>
+      <table id="positions">
+        <thead>
+          <tr><th>Ticker</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>P&amp;L</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+
+      <h3>Last recommendations</h3>
+      <table id="recs">
+        <thead>
+          <tr><th>Ticker</th><th>Action</th><th>Conf.</th><th>Rationale</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <footer>
+    <span>Observability:</span>
+    <a href="http://localhost:5080" target="_blank">OpenObserve</a>
+    <a href="http://localhost:8001/docs" target="_blank">Compliance API</a>
+    <a href="http://localhost:8002/docs" target="_blank">Analytics API</a>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

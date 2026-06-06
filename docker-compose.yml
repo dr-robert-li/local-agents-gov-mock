@@ -1,0 +1,168 @@
+# Claude Agent SDK — Hourly Stock Research POC
+# Single-file stack: agent + 2 Anthropic API emulators + web UI + OpenObserve + Redis.
+# All persistent SQLite state lives on the shared named volume `poc-data` at /data.
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis — SSE pub/sub backbone (agent publishes, web-ui subscribes). Internal.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: poc-redis
+    restart: unless-stopped
+    # Pub/sub only — disable RDB + AOF persistence so a full/slow disk can never
+    # trip stop-writes-on-bgsave-error and silently block PUBLISH/RPUSH.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [poc-net]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # OpenObserve — OTLP HTTP receiver + observability UI on 5080.
+  # ---------------------------------------------------------------------------
+  openobserve:
+    # Thin wrapper over the upstream image that adds a static busybox so the
+    # distroless image can run a container-internal healthcheck.
+    build: ./openobserve
+    container_name: poc-openobserve
+    restart: unless-stopped
+    environment:
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD}
+      ZO_DATA_DIR: /data
+    volumes:
+      - openobserve-data:/data
+    ports:
+      - "5080:5080"
+    networks: [poc-net]
+    healthcheck:
+      # OpenObserve serves a liveness probe at /healthz; busybox wget exits
+      # non-zero on any non-2xx response.
+      test: ["CMD", "/bin/busybox", "wget", "-q", "-O-", "http://localhost:5080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # Compliance API emulator — Anthropic audit_events contract on 8001.
+  # ---------------------------------------------------------------------------
+  compliance-api:
+    build: ./compliance-api
+    container_name: poc-compliance-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/compliance.db
+      OTLP_ENDPOINT: http://openobserve:5080/api/default
+    volumes:
+      - poc-data:/data
+    ports:
+      - "8001:8001"
+    networks: [poc-net]
+    depends_on:
+      openobserve:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8001/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Analytics API emulator — Anthropic usage/cost contract on 8002.
+  # ---------------------------------------------------------------------------
+  analytics-api:
+    build: ./analytics-api
+    container_name: poc-analytics-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/analytics.db
+      OTLP_ENDPOINT: http://openobserve:5080/api/default
+    volumes:
+      - poc-data:/data
+    ports:
+      - "8002:8002"
+    networks: [poc-net]
+    depends_on:
+      openobserve:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8002/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Agent — APScheduler hourly job + FastAPI control plane on 8080.
+  # ---------------------------------------------------------------------------
+  agent:
+    build: ./agent
+    container_name: poc-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_PATH: /data/portfolio.db
+      REDIS_URL: redis://redis:6379
+      OTLP_ENDPOINT: http://openobserve:5080/api/default
+      COMPLIANCE_API_BASE: http://compliance-api:8001
+      ANALYTICS_API_BASE: http://analytics-api:8002
+      # Trigger a run on startup so validation does not wait for the hourly cron.
+      RUN_ON_STARTUP: "true"
+    volumes:
+      - poc-data:/data
+    ports:
+      - "8080:8080"
+    networks: [poc-net]
+    depends_on:
+      redis:
+        condition: service_healthy
+      openobserve:
+        condition: service_healthy
+      compliance-api:
+        condition: service_healthy
+      analytics-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Web UI — Fastify SSE relay + portfolio dashboard on 3000.
+  # ---------------------------------------------------------------------------
+  web-ui:
+    build: ./web-ui
+    container_name: poc-web-ui
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+      AGENT_BASE: http://agent:8080
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    networks: [poc-net]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Use 127.0.0.1, not localhost: busybox wget resolves localhost to ::1
+      # first, but Fastify binds IPv4 0.0.0.0 — the IPv6 attempt is refused.
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  poc-data:
+  openobserve-data:
+
+networks:
+  poc-net:
+    driver: bridge
